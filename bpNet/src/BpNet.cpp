@@ -1,308 +1,143 @@
-#include "BpNet.h"
+#include "bpNet.h"
+#include <cmath>     // For std::exp
+#include <numeric>   // For std::inner_product if needed, not used here but good practice
+#include <algorithm> // For std::transform if needed
 
-using namespace std;
+// --- 构造函数 ---
+bpNet::bpNet(int i_node, int h_node, int o_node, double learn_rate) :
+    // 使用成员初始化列表进行初始化
+    i_node(i_node),
+    h_node(h_node),
+    o_node(o_node),
+    learn_rate(learn_rate),
+    gen(std::random_device{}()), // 使用硬件熵作为种子
+    dis(-1.0, 1.0)               // 初始化分布范围为[-1.0, 1.0]
+{
+    // 为所有vector分配空间
+    ih_w.resize(i_node, std::vector<double>(h_node));
+    ho_w.resize(h_node, std::vector<double>(o_node));
+    h_b.resize(h_node);
+    o_b.resize(o_node);
+    
+    this->i_data.resize(i_node);
+    h_out.resize(h_node);
+    o_out.resize(o_node);
 
-/*
-* 产生-1~1的随机数
-*/
-inline double getRandom()   {
-    return ((2.0*(double)rand()/RAND_MAX) - 1);
+    h_grad.resize(h_node);
+    o_grad.resize(o_node);
+    
+    // 调用初始化函数来填充权重和偏置
+    init();
 }
 
-/*
-* sigmoid 函数（激活函数 要保证单调 且只有一个变量）
-*/
-inline double sigmoid(double x){
-    //一般bp用作分类的话都用该函数
-    double ans = 1 / (1+exp(-x));
-    return ans;
-}
-
-
-/*
-* 初始化（给加权或者偏移赋初值）
-*/
-BpNet::BpNet(){
-    srand((unsigned)time(NULL));
-    // error初始值，只要能保证大于阀值进入训练就可以
-    error = 100.f;
-
-    /*
-     *初始化输入层每个节点对下一层每个节点的加权
-     */
-    for (int i = 0; i < INNODE; i++){
-        inputLayer[i] = new InputNode();
-        for (int j = 0; j < HIDENODE; j++){
-            inputLayer[i]->weight.push_back(getRandom());
-            inputLayer[i]->wDeltaSum.push_back(0.f);
+// --- 初始化函数 ---
+void bpNet::init() {
+    // 初始化输入层到隐藏层的权重
+    for (int i = 0; i < i_node; ++i) {
+        for (int j = 0; j < h_node; ++j) {
+            ih_w[i][j] = dis(gen); // 使用新的随机数生成方式
         }
     }
-
-    /*
-     *初始化隐藏层每个节点对下一层每个节点的加权
-     *初始化隐藏层每个节点的偏移
-     */
-    for (int i = 0; i < HIDENODE; i++){
-        hiddenLayer[i] = new HiddenNode();
-        hiddenLayer[i]->bias = getRandom();
-
-        //初始化加权
-        for (int j = 0; j < OUTNODE; j++){
-            hiddenLayer[i]->weight.push_back(getRandom());
-            hiddenLayer[i]->wDeltaSum.push_back(0.f);
+    // 初始化隐藏层的偏置
+    for (int i = 0; i < h_node; ++i) {
+        h_b[i] = dis(gen);
+    }
+    // 初始化隐藏层到输出层的权重
+    for (int i = 0; i < h_node; ++i) {
+        for (int j = 0; j < o_node; ++j) {
+            ho_w[i][j] = dis(gen);
         }
     }
-
-    /*
-     *初始化输出层每个节点的偏移
-     */
-    for (int i = 0; i < OUTNODE; i++){
-        outputLayer[i] = new OutputNode();
-        outputLayer[i]->bias = getRandom();
+    // 初始化输出层的偏置
+    for (int i = 0; i < o_node; ++i) {
+        o_b[i] = dis(gen);
     }
 }
 
+// --- Sigmoid 激活函数 ---
+double bpNet::sigmoid(double z) const {
+    return 1.0 / (1.0 + std::exp(-z));
+}
 
-/*
-* 正向传播 获取一个样本从输入到输出的结果
-*/
-void BpNet::fp(){
-    /*
-     *隐藏层向输入层获取数据
-     */
-    //遍历隐藏层节点
-    for (int i = 0; i < HIDENODE; i++){
-        double sum = 0.f;
+// --- 前向传播 ---
+void bpNet::forward_propa(const std::vector<double>& input_data) {
+    this->i_data = input_data;
 
-        //遍历输入层每个节点
-        for (int j = 0; j < INNODE; j++){
-            sum += inputLayer[j]->value * inputLayer[j]->weight[i];
+    // 计算隐藏层输出
+    for (int i = 0; i < h_node; ++i) {
+        double z = 0.0;
+        for (int j = 0; j < i_node; ++j) {
+            z += this->i_data[j] * ih_w[j][i];
         }
+        z += h_b[i];
+        h_out[i] = sigmoid(z);
+    }
 
-        //增加偏移
-        sum += hiddenLayer[i]->bias;
-        //调用激活函数 设置o_value
-        hiddenLayer[i]->o_value = sigmoid(sum);
-   }
-
-    /*
-     *输出层向隐藏层获取数据
-     */
-    //遍历输出层节点
-    for (int i = 0; i < OUTNODE; i++){
-        double sum = 0.f;
-
-        //遍历隐藏层节点
-        for (int j = 0; j < HIDENODE; j++){
-            sum += hiddenLayer[j]->o_value * hiddenLayer[j]->weight[i];
+    // 计算输出层输出
+    for (int i = 0; i < o_node; ++i) {
+        double z = 0.0;
+        for (int j = 0; j < h_node; ++j) {
+            z += h_out[j] * ho_w[j][i];
         }
-
-        sum += outputLayer[i]->bias;
-        outputLayer[i]->o_value = sigmoid(sum);
+        z += o_b[i];
+        o_out[i] = sigmoid(z);
     }
 }
 
-
-/*
-* 反向传播 从输出层再反向
-*
-* 该方法目的是返回多个样本 加权应该变化值的和wDeltaSum、偏移应该变化值的和bDeltaSum
-* 在训练时根据样本数求平均值 用该平均值修改加权、偏移
-*
-*/
-void BpNet::bp(){
-    /*
-     *求误差值error
-     */
-    for (int i = 0; i < OUTNODE; i++){
-        double tmpe = fabs(outputLayer[i]->o_value-outputLayer[i]->rightout);
-        error += tmpe * tmpe / 2;
+// --- 反向传播 ---
+void bpNet::back_propa(const std::vector<double>& target_data) {
+    // 1. 计算输出层梯度
+    for (int i = 0; i < o_node; ++i) {
+        o_grad[i] = (target_data[i] - o_out[i]) * o_out[i] * (1.0 - o_out[i]);
     }
 
-
-    /*
-     *求输出层偏移的变化值
-     */
-    for(int i=0;i<OUTNODE;i++){
-        //偏移应该变化的值 参照b2公式
-        double bDelta=(-1)*(outputLayer[i]->rightout-outputLayer[i]->o_value)*outputLayer[i]->o_value*(1-outputLayer[i]->o_value);
-        outputLayer[i]->bDeltaSum+=bDelta;
+    // 2. 计算隐藏层梯度
+    for (int i = 0; i < h_node; ++i) {
+        double error_sum = 0.0;
+        for (int j = 0; j < o_node; ++j) {
+            error_sum += o_grad[j] * ho_w[i][j];
+        }
+        h_grad[i] = error_sum * h_out[i] * (1.0 - h_out[i]);
     }
 
-    /*
-     *求对输出层加权的变化值
-     */
-    for (int i = 0; i < HIDENODE; i++){
-        for(int j=0;j<OUTNODE;j++){
-            //加权应该变化的值 参照w9公式
-            double wDelta=(-1)*(outputLayer[j]->rightout-outputLayer[j]->o_value)*outputLayer[j]->o_value*(1-outputLayer[j]->o_value)*hiddenLayer[i]->o_value;
-            hiddenLayer[i]->wDeltaSum[j]+=wDelta;
+    // 3. 更新隐藏层到输出层的权重和偏置
+    for (int i = 0; i < h_node; ++i) {
+        for (int j = 0; j < o_node; ++j) {
+            ho_w[i][j] += learn_rate * o_grad[j] * h_out[i];
         }
     }
-
-    /*
-     *求隐藏层偏移
-     */
-     for(int i=0;i<HIDENODE;i++){
-        double sum=0;//因为是遍历输出层节点 不可以确定有多少个输出节点 参照b1公式的第一个公因式
-        for(int j=0;j<OUTNODE;j++){
-            sum+=(-1)*(outputLayer[j]->rightout-outputLayer[j]->o_value)*outputLayer[j]->o_value*(1-outputLayer[j]->o_value)*hiddenLayer[i]->weight[j];
-        }
-        //参照公式b1
-        hiddenLayer[i]->bDeltaSum+=(sum*hiddenLayer[i]->o_value*(1-hiddenLayer[i]->o_value));
-     }
-
-     /*
-      *求输入层对隐藏层的加权变化
-      */
-      for(int i=0;i<INNODE;i++){
-         //从公式b1和w1可以看出 两个公式是有公因式 所以这部分代码相同
-         double sum=0;
-         for(int j=0;j<HIDENODE;j++){
-            for(int k=0;k<OUTNODE;k++){
-                sum+=(-1)*(outputLayer[k]->rightout-outputLayer[k]->o_value)*outputLayer[k]->o_value*(1-outputLayer[k]->o_value)*hiddenLayer[j]->weight[k];
-            }
-            //参照公式w1
-            inputLayer[i]->wDeltaSum[j]+=(sum*hiddenLayer[j]->o_value*(1-hiddenLayer[j]->o_value)*inputLayer[i]->value);
-         }
-      }
-
-}
-
-
-/*
-* 进行训练 （注意在修改加权和偏移时都是）
-*/
-void BpNet::doTraining(vector<Sample> sampleGroup, double threshold,int mostTimes){
-    int sampleNum = sampleGroup.size();
-    int trainTimes=0;
-    bool isSuccess=true;
-
-    while(error >= threshold){
-        //判断是否超过最大训练次数
-        if(trainTimes>mostTimes){
-            isSuccess=false;
-            break;
-        }
-
-        cout<<"训练次数:"<<trainTimes++<<"\t\t"<<"当前误差: " << error << endl;
-        error = 0.f;
-
-        //初始化输入层加权的delta和
-        for (int i = 0; i < INNODE; i++){
-            inputLayer[i]->wDeltaSum.assign(inputLayer[i]->wDeltaSum.size(), 0.f);
-        }
-
-        //初始化隐藏层加权和偏移的delta和
-        for (int i = 0; i < HIDENODE; i++){
-            hiddenLayer[i]->wDeltaSum.assign(hiddenLayer[i]->wDeltaSum.size(), 0.f);
-            hiddenLayer[i]->bDeltaSum = 0.f;
-        }
-
-        //初始化输出层的偏移和
-        for (int i = 0; i < OUTNODE; i++){
-            outputLayer[i]->bDeltaSum = 0.f;
-        }
-
-        //完成所有样本的调用与反馈
-        for (int iter = 0; iter < sampleNum; iter++){
-            setInValue(sampleGroup[iter].in);
-            setOutRightValue(sampleGroup[iter].out);
-
-            fp();
-            bp();
-        }
-
-        //修改输入层的加权
-        for (int i = 0; i < INNODE; i++){
-            for (int j = 0; j < HIDENODE; j++){
-                //每一个加权的和都是所有样本累积的 所以要除以样本数
-                inputLayer[i]->weight[j] -= LEARNINGRATE * inputLayer[i]->wDeltaSum[j] / sampleNum;
-            }
-        }
-
-        //修改隐藏层的加权和偏移
-        for (int i = 0; i < HIDENODE; i++){
-            //修改每个节点的偏移 因为一个节点就一个偏移 所以不用在节点里再遍历
-            hiddenLayer[i]->bias -= LEARNINGRATE * hiddenLayer[i]->bDeltaSum / sampleNum;
-
-            //修改每个节点的各个加权的值
-            for (int j = 0; j < OUTNODE; j++){
-                hiddenLayer[i]->weight[j] -= LEARNINGRATE * hiddenLayer[i]->wDeltaSum[j] / sampleNum;
-            }
-        }
-
-        //修改输出层的偏移
-        for (int i = 0; i < OUTNODE; i++){
-            outputLayer[i]->bias -= LEARNINGRATE * outputLayer[i]->bDeltaSum / sampleNum;
-        }
+    for (int i = 0; i < o_node; ++i) {
+        o_b[i] += learn_rate * o_grad[i];
     }
 
-    if(isSuccess){
-        cout<<endl<<"训练成功!!!"<<"\t\t"<<"最终误差: "<<error<<endl<<endl;
-    }else{
-        cout<<endl<<"训练失败! 超过最大次数!"<<"\t\t"<<"最终误差: "<<error<<endl<<endl;
+    // 4. 更新输入层到隐藏层的权重和偏置
+    for (int i = 0; i < i_node; ++i) {
+        for (int j = 0; j < h_node; ++j) {
+            ih_w[i][j] += learn_rate * h_grad[j] * this->i_data[i];
+        }
     }
-
-}
-
-
-/*
-* 训练后进行测试使用
-*/
-void BpNet::afterTrainTest(vector<Sample>& testGroup){
-    int testNum = testGroup.size();
-
-    for (int iter = 0; iter < testNum; iter++){
-        //把样本输出清空
-        testGroup[iter].out.clear();
-        setInValue(testGroup[iter].in);
-
-        //从隐藏层从输入层获取数据
-        for (int i = 0; i < HIDENODE; i++){
-            double sum = 0.f;
-            for (int j = 0; j < INNODE; j++){
-                sum += inputLayer[j]->value * inputLayer[j]->weight[i];
-            }
-
-            sum += hiddenLayer[i]->bias;
-            hiddenLayer[i]->o_value = sigmoid(sum);
-        }
-
-        //输出层从隐藏层获取数据
-        for (int i = 0; i < OUTNODE; i++){
-            double sum = 0.f;
-            for (int j = 0; j < HIDENODE; j++){
-                sum += hiddenLayer[j]->o_value * hiddenLayer[j]->weight[i];
-            }
-
-            sum += outputLayer[i]->bias;
-            outputLayer[i]->o_value = sigmoid(sum);
-
-            //设置输出的值
-            testGroup[iter].out.push_back(outputLayer[i]->o_value);
-        }
+    for (int i = 0; i < h_node; ++i) {
+        h_b[i] += learn_rate * h_grad[i];
     }
 }
 
-
-/*
-* 给输入层每个节点设置输入值 每个样本进行训练时都要调用
-*/
-void BpNet::setInValue(vector<double> inValue){
-    //对应一次样本 输入层每个节点的输入值
-    for (int i = 0; i < INNODE; i++){
-        inputLayer[i]->value = inValue[i];
-    }
+// --- 训练函数 (公共接口) ---
+void bpNet::train(const std::vector<double>& i_data, const std::vector<double>& t_data) {
+    forward_propa(i_data);
+    back_propa(t_data);
 }
 
-/*
-* 给输出层每个节点设置正确值 每个样本进行训练时都要调用
-*/
-void BpNet::setOutRightValue(vector<double> outRightValue){
-    //对应一次样本 输出层层每个节点的正确值
-    for (int i = 0; i < OUTNODE; i++){
-            outputLayer[i]->rightout = outRightValue[i];
-    }
+// --- 预测函数 (公共接口) ---
+std::vector<double> bpNet::predict(const std::vector<double>& i_data) {
+    forward_propa(i_data);
+    return o_out; // 返回前向传播后的结果
 }
 
+// --- 获取损失函数 (公共接口) ---
+double bpNet::get_loss(const std::vector<double>& t_data) const {
+    double loss = 0.0;
+    for (int i = 0; i < o_node; ++i) {
+        loss += (t_data[i] - o_out[i]) * (t_data[i] - o_out[i]);
+    }
+    return loss / 2.0;
+}
