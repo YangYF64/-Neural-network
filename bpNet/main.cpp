@@ -9,7 +9,7 @@
 #include <Windows.h> // 用于设置控制台编码
 #include "bpNet.h"
 
-// 函数声明（与之前版本相同）
+// 函数声明
 bool loadDataFromFile(const std::string& filename, int num_inputs, int num_outputs,
                       std::vector<std::vector<double>>& inputs, 
                       std::vector<std::vector<double>>& targets);
@@ -125,7 +125,7 @@ int main() {
 }
 
 
-// 数据加载函数（与之前版本相同，无需修改）
+// 数据加载函数
 bool loadDataFromFile(const std::string& filename, int num_inputs, int num_outputs,
                       std::vector<std::vector<double>>& inputs, 
                       std::vector<std::vector<double>>& targets) {
@@ -158,4 +158,5 @@ bool loadDataFromFile(const std::string& filename, int num_inputs, int num_outpu
     }
     file.close();
     return true;
+
 }
